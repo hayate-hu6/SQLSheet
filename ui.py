@@ -1,10 +1,10 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableView, QToolBar,
-    QLineEdit, QPushButton, QInputDialog, QFileDialog, QMessageBox,
-    QHeaderView, QMenu, QLabel
+    QLineEdit, QPushButton, QInputDialog, QFileDialog, QMessageBox, QTabWidget,
+    QHeaderView, QMenu, QLabel, QColorDialog
 )
 from PySide6.QtCore import Qt, QItemSelectionModel
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor
 
 from sheet_model import SheetModel
 from sql_engine import sql_engine
@@ -17,57 +17,54 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SQLSheet (SQL機能付き表計算ソフト)")
         self.resize(1000, 700)
         
-        self.model = SheetModel()
-        self.table_view = QTableView()
-        self.table_view.setModel(self.model)
+        self.tabs = QTabWidget()
+        self.sheets = [] # [{"model": SheetModel, "view": QTableView}, ...]
         
-        # 列行のヘッダー幅をよしなに設定
-        self.table_view.horizontalHeader().setDefaultSectionSize(100)
-        
-        # セクションをA, B, C...にする
-        def header_data(section, orientation, role):
-            if role != Qt.DisplayRole:
-                return None
-            if orientation == Qt.Horizontal:
-                # 0->A, 1->B...
-                res = ""
-                s = section
-                while s >= 0:
-                    res = chr(65 + (s % 26)) + res
-                    s = s // 26 - 1
-                return res
-            else:
-                return str(section + 1)
-        self.model.headerData = header_data
-
-        # テーブルの右クリックメニュー
-        self.table_view.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table_view.customContextMenuRequested.connect(self.show_context_menu)
-
         self._setup_ui()
+        self.add_sheet("Sheet1")
 
     def _setup_ui(self):
-        # ツールバー（ファイルIO）
-        toolbar_file = QToolBar("File")
-        self.addToolBar(toolbar_file)
+        # メインメニュー
+        menu = self.menuBar()
+        file_menu = menu.addMenu("ファイル")
         
         action_open = QAction("開く", self)
         action_open.triggered.connect(self.open_file)
-        toolbar_file.addAction(action_open)
+        file_menu.addAction(action_open)
         
         action_save = QAction("保存", self)
         action_save.triggered.connect(self.save_file)
-        toolbar_file.addAction(action_save)
+        file_menu.addAction(action_save)
+
+        edit_menu = menu.addMenu("編集")
+        action_undo = QAction("元に戻す (Undo)", self)
+        action_undo.setShortcut("Ctrl+Z")
+        action_undo.triggered.connect(self.undo_action)
+        edit_menu.addAction(action_undo)
+        
+        action_redo = QAction("やり直し (Redo)", self)
+        action_redo.setShortcut("Ctrl+Y")
+        action_redo.triggered.connect(self.redo_action)
+        edit_menu.addAction(action_redo)
+
+        sheet_menu = menu.addMenu("シート")
+        action_add_sheet = QAction("シートの追加", self)
+        action_add_sheet.triggered.connect(lambda: self.add_sheet(f"Sheet{len(self.sheets)+1}"))
+        sheet_menu.addAction(action_add_sheet)
 
         # ツールバー（ツール群）
         toolbar_tools = QToolBar("Tools")
         self.addToolBar(toolbar_tools)
         
-        action_compare = QAction("差分比較テスト", self)
-        action_compare.triggered.connect(self.test_compare)
-        toolbar_tools.addAction(action_compare)
+        action_bold = QAction("太字 (B)", self)
+        action_bold.triggered.connect(self.toggle_bold)
+        toolbar_tools.addAction(action_bold)
+        
+        action_color = QAction("背景色設定", self)
+        action_color.triggered.connect(self.set_bg_color)
+        toolbar_tools.addAction(action_color)
 
-        # メインウィジェットとレイアウト
+        # メインレイアウト
         central = QWidget()
         layout = QVBoxLayout()
         
@@ -75,7 +72,7 @@ class MainWindow(QMainWindow):
         form_layout = QHBoxLayout()
         form_layout.addWidget(QLabel("fx / SQL:"))
         self.sql_input = QLineEdit()
-        self.sql_input.setPlaceholderText('例: =sql("select * from テーブル名") または数式')
+        self.sql_input.setPlaceholderText('例: =sql("select * from テーブル名") または =A1+B1')
         form_layout.addWidget(self.sql_input)
         
         run_btn = QPushButton("実行 (Enter)")
@@ -84,49 +81,144 @@ class MainWindow(QMainWindow):
         form_layout.addWidget(run_btn)
         
         layout.addLayout(form_layout)
-        layout.addWidget(self.table_view)
+        layout.addWidget(self.tabs)
         
         central.setLayout(layout)
         self.setCentralWidget(central)
 
-        # 選択セルが変わった時のイベント（数式バーの更新）
-        self.table_view.selectionModel().currentChanged.connect(self.on_cell_selected)
+    def current_model_view(self):
+        idx = self.tabs.currentIndex()
+        if idx >= 0 and idx < len(self.sheets):
+            return self.sheets[idx]["model"], self.sheets[idx]["view"]
+        return None, None
+
+    def add_sheet(self, name):
+        model = SheetModel()
+        view = QTableView()
+        view.setModel(model)
+        view.horizontalHeader().setDefaultSectionSize(100)
+        
+        def header_data(section, orientation, role):
+            if role != Qt.DisplayRole:
+                return None
+            if orientation == Qt.Horizontal:
+                res = ""
+                s = section
+                while s >= 0:
+                    res = chr(65 + (s % 26)) + res
+                    s = s // 26 - 1
+                return res
+            else:
+                return str(section + 1)
+        model.headerData = header_data
+
+        view.setContextMenuPolicy(Qt.CustomContextMenu)
+        view.customContextMenuRequested.connect(self.show_context_menu)
+        
+        # セル選択切り替え時に数式バーを更新
+        view.selectionModel().currentChanged.connect(self.on_cell_selected)
+        
+        self.sheets.append({"model": model, "view": view})
+        self.tabs.addTab(view, name)
 
     def on_cell_selected(self, current, previous):
         if not current.isValid():
             return
         r, c = current.row(), current.column()
-        # 数式があれば数式を、なければ値を表示
-        formula = self.model.formulas.get((r, c))
+        model, _ = self.current_model_view()
+        if not model:
+            return
+        
+        formula = model.formulas.get((r, c))
         if formula:
             self.sql_input.setText(formula)
         else:
-            val = self.model.values.get((r, c), "")
+            val = model.values.get((r, c), "")
             self.sql_input.setText(str(val))
 
     def apply_formula(self):
-        current = self.table_view.currentIndex()
+        model, view = self.current_model_view()
+        if not model: return
+        current = view.currentIndex()
         if not current.isValid():
             return
         
         text = self.sql_input.text()
-        self.model.setData(current, text, Qt.EditRole)
+        model.setData(current, text, Qt.EditRole)
+
+    def undo_action(self):
+        model, _ = self.current_model_view()
+        if model: model.undo()
+
+    def redo_action(self):
+        model, _ = self.current_model_view()
+        if model: model.redo()
+
+    def toggle_bold(self):
+        model, view = self.current_model_view()
+        if not model: return
+        selection = view.selectionModel().selectedIndexes()
+        if selection:
+            # 現在の先頭セルが太字か判定して反転させる
+            r, c = selection[0].row(), selection[0].column()
+            f = model.fonts.get((r, c), {"bold": False})
+            new_bold = not f.get("bold", False)
+            model.set_cell_style(selection, bold=new_bold)
+
+    def set_bg_color(self):
+        model, view = self.current_model_view()
+        if not model: return
+        selection = view.selectionModel().selectedIndexes()
+        if selection:
+            color = QColorDialog.getColor(Qt.yellow, self, "背景色の選択")
+            if color.isValid():
+                model.set_cell_style(selection, bg_color=color)
 
     def show_context_menu(self, pos):
+        model, view = self.current_model_view()
+        if not model: return
+        
         menu = QMenu(self)
-        action_name_range = QAction("選択範囲に名前を付ける", self)
+        
+        action_name_range = QAction("選択範囲に名前を付ける (SQL連携)", self)
         action_name_range.triggered.connect(self.name_selected_range)
         menu.addAction(action_name_range)
         
-        menu.exec_(self.table_view.viewport().mapToGlobal(pos))
+        menu.addSeparator()
+        
+        action_insert_row = QAction("行を挿入", self)
+        action_insert_row.triggered.connect(self.insert_row)
+        menu.addAction(action_insert_row)
+        
+        action_insert_col = QAction("列を挿入", self)
+        action_insert_col.triggered.connect(self.insert_col)
+        menu.addAction(action_insert_col)
+        
+        menu.exec_(view.viewport().mapToGlobal(pos))
+
+    def insert_row(self):
+        model, view = self.current_model_view()
+        if not model: return
+        idx = view.currentIndex()
+        if idx.isValid():
+            model.insertRows(idx.row(), 1)
+
+    def insert_col(self):
+        model, view = self.current_model_view()
+        if not model: return
+        idx = view.currentIndex()
+        if idx.isValid():
+            model.insertColumns(idx.column(), 1)
 
     def name_selected_range(self):
-        selection = self.table_view.selectionModel().selection()
+        model, view = self.current_model_view()
+        if not model: return
+        
+        selection = view.selectionModel().selection()
         if selection.isEmpty():
             QMessageBox.warning(self, "エラー", "範囲を選択してください。")
             return
             
-        # 単一の連続した矩形選択と仮定
         rect = selection[0]
         start_r = rect.top()
         end_r = rect.bottom()
@@ -135,40 +227,31 @@ class MainWindow(QMainWindow):
         
         name, ok = QInputDialog.getText(self, "範囲に名前を付ける", "範囲名 (SQLのテーブル名として使われます):")
         if ok and name:
-            self.model.set_named_range(name, start_r, start_c, end_r, end_c)
+            model.set_named_range(name, start_r, start_c, end_r, end_c)
             QMessageBox.information(self, "完了", f"「{name}」として範囲を保存しました。\n SQLiteで参照可能です。")
 
     def open_file(self):
+        model, _ = self.current_model_view()
+        if not model: return
         path, _ = QFileDialog.getOpenFileName(self, "ファイルを開く", "", "Supported Files (*.csv *.xlsx *.xls)")
         if path:
             try:
                 data = load_file(path)
-                self.model.load_data(data)
-                QMessageBox.information(self, "完了", "読み込みました。\n(CSVの場合、先頭ゼロは保持されています)")
+                model.load_data(data)
+                self.tabs.setTabText(self.tabs.currentIndex(), path.split('/')[-1])
+                QMessageBox.information(self, "完了", "読み込みました。")
             except Exception as e:
                 QMessageBox.critical(self, "エラー", str(e))
 
     def save_file(self):
+        model, _ = self.current_model_view()
+        if not model: return
         path, _ = QFileDialog.getSaveFileName(self, "ファイルを保存", "", "CSV (*.csv);;Excel (*.xlsx)")
         if path:
             try:
-                data = self.model.get_data_list()
+                data = model.get_data_list()
                 save_file(path, data)
+                self.tabs.setTabText(self.tabs.currentIndex(), path.split('/')[-1])
                 QMessageBox.information(self, "完了", "保存しました。")
             except Exception as e:
                 QMessageBox.critical(self, "エラー", str(e))
-
-    def test_compare(self):
-        """
-        簡易的なシート比較テストの実装（同じ位置のセル比較）
-        C++オフロードを想定したextension_apiを通じた比較処理の呼び出しを含む
-        """
-        QMessageBox.information(self, "機能の解説", "「シート及び名前を付けたセル範囲の比較」機能です。\n現在のシート全体同士を仮想的に自身と比較するテストを実行します(機能確認用)。")
-        
-        data = self.model.get_data_list()
-        # 同じデータを比較（モック）し、その結果を表示
-        result = extension_api.compare_cells_position(data, data)
-        # ログ等で結果を確認 (GUIにはダイアログで一部出力)
-        
-        if result and result[0]:
-            QMessageBox.information(self, "比較結果", f"1行目の比較結果: {result[0]}")
